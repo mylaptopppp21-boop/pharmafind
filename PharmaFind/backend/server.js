@@ -1,62 +1,769 @@
+
 require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
+const supabase = require('./config/supabase');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const DB_FILE = path.join(__dirname, 'data', 'db.json');
-const SECRET = process.env.JWT_SECRET || 'development-only-change-this-secret-before-deployment';
-fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+const SECRET = process.env.JWT_SECRET;
 
-const initialMedicines = [
- ['Paracetamol 500mg','Paracetamol','Pain Relief','Tablet','₹20','Generic','OTC'],['Dolo 650','Paracetamol','Pain Relief','Tablet','₹32','Micro Labs','OTC'],['Crocin Advance','Paracetamol','Pain Relief','Tablet','₹30','GSK','OTC'],['Cetirizine 10mg','Cetirizine','Allergy','Tablet','₹18','Generic','OTC'],['Levocetirizine 5mg','Levocetirizine','Allergy','Tablet','₹25','Generic','OTC'],['ORS Sachet','Oral Rehydration Salts','Digestive Health','Powder','₹22','Generic','OTC'],['Digene','Magaldrate + Simethicone','Digestive Health','Tablet','₹25','Abbott','OTC'],['Pantoprazole 40mg','Pantoprazole','Digestive Health','Tablet','₹45','Generic','Prescription'],['Vitamin C 500mg','Ascorbic Acid','Vitamins','Tablet','₹60','Generic','OTC'],['Vitamin D3 60000 IU','Cholecalciferol','Vitamins','Capsule','₹90','Generic','Prescription'],['B-Complex','Vitamin B Complex','Vitamins','Tablet','₹55','Generic','OTC'],['Calcium + D3','Calcium Carbonate + Vitamin D3','Vitamins','Tablet','₹110','Generic','OTC'],['Cetaphil Cleanser','Skin Cleanser','Personal Care','Cleanser','₹349','Cetaphil','OTC'],['Antiseptic Liquid','Chloroxylenol','First Aid','Liquid','₹95','Dettol','OTC'],['Bandage Roll','Cotton Gauze','First Aid','Medical Supply','₹35','Generic','OTC'],['Adhesive Bandages','Wound Dressing','First Aid','Medical Supply','₹30','Generic','OTC'],['Cough Syrup','Dextromethorphan combination','Cold & Cough','Syrup','₹85','Generic','OTC'],['Saline Nasal Spray','Sodium Chloride','Cold & Cough','Spray','₹75','Generic','OTC'],['Thermometer','Digital Thermometer','Devices','Device','₹180','Generic','OTC'],['Pulse Oximeter','Oxygen Saturation Monitor','Devices','Device','₹950','Generic','OTC'],['Ibuprofen 200mg','Ibuprofen','Pain Relief','Tablet','₹28','Generic','OTC'],['Aspirin 75mg','Aspirin','Cardiac Care','Tablet','₹25','Generic','Prescription'],['Metformin 500mg','Metformin','Diabetes Care','Tablet','₹35','Generic','Prescription'],['Amlodipine 5mg','Amlodipine','Cardiac Care','Tablet','₹30','Generic','Prescription'],['Azithromycin 500mg','Azithromycin','Antibiotics','Tablet','₹95','Generic','Prescription'],['Amoxicillin 500mg','Amoxicillin','Antibiotics','Capsule','₹75','Generic','Prescription'],['Montelukast 10mg','Montelukast','Allergy','Tablet','₹65','Generic','Prescription'],['Omeprazole 20mg','Omeprazole','Digestive Health','Capsule','₹38','Generic','Prescription'],['Insulin pen needles','Pen Needles','Diabetes Care','Medical Supply','₹160','Generic','Prescription'],['Hand Sanitizer','Ethyl Alcohol','Personal Care','Liquid','₹65','Generic','OTC']
-];
-function seed(){
- if(fs.existsSync(DB_FILE)) return;
- const pharmacies=[
-  {id:'ph_demo_1',name:'CarePlus Pharmacy',ownerId:'owner_demo_1',address:'Ameerpet, Hyderabad',city:'Hyderabad',phone:'9000000001',description:'Community pharmacy with everyday essentials',verified:true},
-  {id:'ph_demo_2',name:'HealthFirst Medicals',ownerId:'owner_demo_2',address:'SR Nagar, Hyderabad',city:'Hyderabad',phone:'9000000002',description:'Medicines and healthcare essentials',verified:true},
-  {id:'ph_demo_3',name:'MediCare Pharmacy',ownerId:'owner_demo_3',address:'Kukatpally, Hyderabad',city:'Hyderabad',phone:'9000000003',description:'Local pharmacy and wellness store',verified:true}
- ];
- const users=[
-  {id:'owner_demo_1',name:'CarePlus Owner',email:'owner@careplus.demo',role:'owner',passwordHash:hashPassword('Demo@123'),createdAt:new Date().toISOString()},
-  {id:'owner_demo_2',name:'HealthFirst Owner',email:'owner@healthfirst.demo',role:'owner',passwordHash:hashPassword('Demo@123'),createdAt:new Date().toISOString()},
-  {id:'owner_demo_3',name:'MediCare Owner',email:'owner@medicare.demo',role:'owner',passwordHash:hashPassword('Demo@123'),createdAt:new Date().toISOString()}
- ];
- const inventory=[];
- initialMedicines.forEach((m,i)=>{pharmacies.forEach((p,j)=>{if((i+j)%4!==0) inventory.push({id:crypto.randomUUID(),pharmacyId:p.id,name:m[0],genericName:m[1],category:m[2],form:m[3],price:Number(m[4].replace('₹',''))+(j*3),brand:m[5],prescription:m[6]==='Prescription',stock:12+((i*7+j*11)%75),description:`${m[1]} — check pack information and consult a qualified healthcare professional before use.`});});});
- fs.writeFileSync(DB_FILE,JSON.stringify({users,pharmacies,inventory,orders:[],reviews:[]},null,2));
+if (!SECRET || SECRET.length < 32) {
+  throw new Error('Set a strong JWT_SECRET in your environment variables.');
 }
-function hashPassword(password,salt=crypto.randomBytes(16).toString('hex')){const key=crypto.scryptSync(password,salt,64).toString('hex');return `${salt}:${key}`;}
-function verifyPassword(password,stored){const [salt,key]=String(stored||'').split(':');if(!salt||!key)return false;const test=crypto.scryptSync(password,salt,64);return crypto.timingSafeEqual(test,Buffer.from(key,'hex'));}
-function read(){return JSON.parse(fs.readFileSync(DB_FILE,'utf8'));}
-function write(db){fs.writeFileSync(DB_FILE,JSON.stringify(db,null,2));}
-function tokenFor(user){const payload=Buffer.from(JSON.stringify({id:user.id,role:user.role,exp:Date.now()+7*86400000})).toString('base64url');const sig=crypto.createHmac('sha256',SECRET).update(payload).digest('base64url');return `${payload}.${sig}`;}
-function auth(req,res,next){const t=(req.headers.authorization||'').replace(/^Bearer\s+/i,'');try{const [p,s]=t.split('.');const expected=crypto.createHmac('sha256',SECRET).update(p).digest();const actual=Buffer.from(s,'base64url');if(!crypto.timingSafeEqual(expected,actual))throw Error();const data=JSON.parse(Buffer.from(p,'base64url').toString());if(data.exp<Date.now())throw Error();req.user=data;next();}catch{return res.status(401).json({message:'Please log in to continue'});}}
-const allow=(...roles)=>(req,res,next)=>roles.includes(req.user.role)?next():res.status(403).json({message:'You do not have permission for this action'});
-const safeUser=u=>({id:u.id,name:u.name,email:u.email,role:u.role});
-seed();
-app.disable('x-powered-by');app.use(helmet());app.use(cors({origin:process.env.CLIENT_URL||'http://localhost:5173'}));app.use(express.json({limit:'1mb'}));app.use(morgan('dev'));app.use('/api',rateLimit({windowMs:15*60*1000,max:300,standardHeaders:true,legacyHeaders:false}));
-app.get('/api/health',(req,res)=>res.json({status:'ok',service:'PharmaFind API',database:'local-json',timestamp:new Date().toISOString()}));
-app.post('/api/auth/register',(req,res)=>{const {name,email,password,role='customer',pharmacyName,address,phone}=req.body||{};if(!name||!email||!password)return res.status(400).json({message:'Name, email and password are required'});if(password.length<8)return res.status(400).json({message:'Password must be at least 8 characters'});if(!['customer','owner'].includes(role))return res.status(400).json({message:'Invalid account role'});if(role==='owner'&&(!pharmacyName||!address))return res.status(400).json({message:'Pharmacy name and address are required for owner accounts'});const db=read();if(db.users.some(u=>u.email.toLowerCase()===email.toLowerCase()))return res.status(409).json({message:'An account with this email already exists'});const user={id:crypto.randomUUID(),name,email:email.toLowerCase(),role,passwordHash:hashPassword(password),createdAt:new Date().toISOString()};db.users.push(user);if(role==='owner')db.pharmacies.push({id:crypto.randomUUID(),name:pharmacyName,ownerId:user.id,address,city:'',phone:phone||'',description:'New pharmacy',verified:false});write(db);res.status(201).json({token:tokenFor(user),user:safeUser(user)});});
-app.post('/api/auth/login',(req,res)=>{const {email,password}=req.body||{};const db=read();const user=db.users.find(u=>u.email===String(email||'').toLowerCase());if(!user||!verifyPassword(password||'',user.passwordHash))return res.status(401).json({message:'Invalid email or password'});res.json({token:tokenFor(user),user:safeUser(user)});});
-app.get('/api/auth/me',auth,(req,res)=>{const u=read().users.find(x=>x.id===req.user.id);if(!u)return res.status(404).json({message:'Account not found'});res.json({user:safeUser(u)});});
-app.get('/api/medicines',(req,res)=>{const db=read();let items=db.inventory.map(x=>({...x,pharmacy:db.pharmacies.find(p=>p.id===x.pharmacyId)})).filter(x=>x.pharmacy);const q=String(req.query.q||'').toLowerCase();const cat=String(req.query.category||'');const city=String(req.query.city||'').toLowerCase();if(q)items=items.filter(x=>[x.name,x.genericName,x.brand,x.category,x.pharmacy.name,x.pharmacy.address].join(' ').toLowerCase().includes(q));if(cat)items=items.filter(x=>x.category===cat);if(city)items=items.filter(x=>(x.pharmacy.city+' '+x.pharmacy.address).toLowerCase().includes(city));if(req.query.inStock==='true')items=items.filter(x=>x.stock>0);res.json({items,categories:[...new Set(db.inventory.map(x=>x.category))].sort(),count:items.length});});
-app.get('/api/pharmacies',(req,res)=>{const db=read();let ps=db.pharmacies.map(p=>({...p,medicineCount:db.inventory.filter(i=>i.pharmacyId===p.id).length}));const q=String(req.query.q||'').toLowerCase();if(q)ps=ps.filter(p=>(p.name+' '+p.address+' '+p.city).toLowerCase().includes(q));res.json({items:ps});});
-app.get('/api/pharmacies/:id',(req,res)=>{const db=read();const p=db.pharmacies.find(x=>x.id===req.params.id);if(!p)return res.status(404).json({message:'Pharmacy not found'});res.json({...p,inventory:db.inventory.filter(x=>x.pharmacyId===p.id)});});
-app.get('/api/owner/overview',auth,allow('owner'),(req,res)=>{const db=read();const p=db.pharmacies.find(x=>x.ownerId===req.user.id);if(!p)return res.status(404).json({message:'Pharmacy profile not found'});const stock=db.inventory.filter(x=>x.pharmacyId===p.id);const orders=db.orders.filter(o=>o.pharmacyId===p.id);res.json({pharmacy:p,inventory:stock,orders,stats:{products:stock.length,lowStock:stock.filter(x=>x.stock<10).length,pendingOrders:orders.filter(o=>o.status==='Pending').length,totalOrders:orders.length}});});
-app.post('/api/owner/inventory',auth,allow('owner'),(req,res)=>{const db=read();const p=db.pharmacies.find(x=>x.ownerId===req.user.id);if(!p)return res.status(404).json({message:'Pharmacy not found'});const {name,genericName,category,form,price,stock,brand,prescription,description}=req.body||{};if(!name||!category||!Number.isFinite(Number(price))||Number(price)<0||!Number.isFinite(Number(stock))||Number(stock)<0)return res.status(400).json({message:'Enter medicine name, category, valid price and stock'});const item={id:crypto.randomUUID(),pharmacyId:p.id,name,genericName:genericName||name,category,form:form||'Tablet',price:Number(price),stock:Number(stock),brand:brand||'Generic',prescription:Boolean(prescription),description:description||''};db.inventory.push(item);write(db);res.status(201).json(item);});
-app.put('/api/owner/inventory/:id',auth,allow('owner'),(req,res)=>{const db=read();const p=db.pharmacies.find(x=>x.ownerId===req.user.id);const item=db.inventory.find(x=>x.id===req.params.id&&p&&x.pharmacyId===p.id);if(!item)return res.status(404).json({message:'Inventory item not found'});for(const k of ['name','genericName','category','form','brand','description'])if(req.body[k]!==undefined)item[k]=req.body[k];for(const k of ['price','stock'])if(req.body[k]!==undefined&&Number.isFinite(Number(req.body[k]))&&Number(req.body[k])>=0)item[k]=Number(req.body[k]);if(req.body.prescription!==undefined)item.prescription=Boolean(req.body.prescription);write(db);res.json(item);});
-app.delete('/api/owner/inventory/:id',auth,allow('owner'),(req,res)=>{const db=read();const p=db.pharmacies.find(x=>x.ownerId===req.user.id);const n=db.inventory.length;db.inventory=db.inventory.filter(x=>!(x.id===req.params.id&&p&&x.pharmacyId===p.id));if(n===db.inventory.length)return res.status(404).json({message:'Inventory item not found'});write(db);res.json({message:'Medicine removed from inventory'});});
-app.post('/api/orders',auth,allow('customer'),(req,res)=>{const {items=[],customerName,address,phone}=req.body||{};if(!items.length||!address||!phone)return res.status(400).json({message:'Cart, delivery address and phone are required'});const db=read();const grouped={};for(const line of items){const item=db.inventory.find(x=>x.id===line.inventoryId);const qty=Number(line.quantity);if(!item||!Number.isInteger(qty)||qty<1||item.stock<qty)return res.status(400).json({message:`Insufficient stock or invalid item: ${item?.name||'medicine'}`});(grouped[item.pharmacyId]??=[]).push({item,qty});}const created=[];for(const [pharmacyId,lines] of Object.entries(grouped)){let total=0;const orderItems=lines.map(({item,qty})=>{item.stock-=qty;total+=item.price*qty;return {inventoryId:item.id,name:item.name,quantity:qty,unitPrice:item.price};});const order={id:'PF-'+Date.now().toString(36).toUpperCase()+'-'+crypto.randomBytes(2).toString('hex').toUpperCase(),userId:req.user.id,pharmacyId,customerName:customerName||'Customer',address,phone,items:orderItems,total,status:'Pending',createdAt:new Date().toISOString()};db.orders.push(order);created.push(order);}write(db);res.status(201).json({orders:created,message:'Order placed successfully'});});
-app.get('/api/orders',auth,(req,res)=>{const db=read();const items=req.user.role==='owner'?db.orders.filter(o=>db.pharmacies.some(p=>p.ownerId===req.user.id&&p.id===o.pharmacyId)):db.orders.filter(o=>o.userId===req.user.id);res.json({items:items.sort((a,b)=>b.createdAt.localeCompare(a.createdAt))});});
-app.patch('/api/orders/:id/status',auth,allow('owner'),(req,res)=>{const db=read();const order=db.orders.find(o=>o.id===req.params.id&&db.pharmacies.some(p=>p.ownerId===req.user.id&&p.id===o.pharmacyId));if(!order)return res.status(404).json({message:'Order not found'});const allowed=['Confirmed','Ready for pickup','Completed','Cancelled'];if(!allowed.includes(req.body.status))return res.status(400).json({message:'Invalid order status'});order.status=req.body.status;write(db);res.json(order);});
-app.use((req,res)=>res.status(404).json({message:'API route not found'}));
-app.use((err,req,res,next)=>{console.error(err);res.status(500).json({message:'Server error'});});
-app.listen(PORT,()=>console.log(`PharmaFind API running at http://localhost:${PORT}`));
+
+const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
+  .split(',')
+  .map(origin => origin.trim());
+
+app.disable('x-powered-by');
+app.use(helmet());
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Origin not allowed by CORS'));
+  }
+}));
+app.use(express.json({ limit: '1mb' }));
+app.use(morgan('dev'));
+app.use('/api', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false
+}));
+
+const asyncRoute = fn => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
+
+const safeUser = user => ({
+  id: user.id,
+  name: user.name,
+  email: user.email,
+  role: user.role
+});
+
+const toUser = row => ({
+  id: row.id,
+  name: row.name,
+  email: row.email,
+  role: row.role,
+  passwordHash: row.password_hash,
+  createdAt: row.created_at
+});
+
+const toPharmacy = row => ({
+  id: row.id,
+  name: row.name,
+  ownerId: row.owner_id,
+  address: row.address,
+  city: row.city,
+  phone: row.phone,
+  description: row.description,
+  verified: row.verified
+});
+
+const toInventory = row => ({
+  id: row.id,
+  pharmacyId: row.pharmacy_id,
+  name: row.name,
+  genericName: row.generic_name,
+  category: row.category,
+  form: row.form,
+  price: Number(row.price),
+  brand: row.brand,
+  prescription: row.prescription,
+  stock: row.stock,
+  description: row.description
+});
+
+const toOrder = row => ({
+  id: row.id,
+  userId: row.user_id,
+  pharmacyId: row.pharmacy_id,
+  customerName: row.customer_name,
+  address: row.address,
+  phone: row.phone,
+  items: row.items,
+  total: Number(row.total),
+  status: row.status,
+  createdAt: row.created_at
+});
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const key = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${key}`;
+}
+
+function verifyPassword(password, stored) {
+  try {
+    const [salt, key] = String(stored || '').split(':');
+    if (!salt || !key || !/^[a-f0-9]{128}$/i.test(key)) return false;
+
+    const test = crypto.scryptSync(password, salt, 64);
+    return crypto.timingSafeEqual(test, Buffer.from(key, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+function tokenFor(user) {
+  const payload = Buffer.from(JSON.stringify({
+    id: user.id,
+    role: user.role,
+    exp: Date.now() + 7 * 24 * 60 * 60 * 1000
+  })).toString('base64url');
+
+  const signature = crypto
+    .createHmac('sha256', SECRET)
+    .update(payload)
+    .digest('base64url');
+
+  return `${payload}.${signature}`;
+}
+
+function auth(req, res, next) {
+  try {
+    const header = req.headers.authorization || '';
+    const token = header.replace(/^Bearer\s+/i, '');
+    const parts = token.split('.');
+
+    if (parts.length !== 2) throw new Error('Invalid token');
+
+    const [payload, signature] = parts;
+    const expected = crypto
+      .createHmac('sha256', SECRET)
+      .update(payload)
+      .digest();
+
+    const actual = Buffer.from(signature, 'base64url');
+
+    if (
+      actual.length !== expected.length ||
+      !crypto.timingSafeEqual(expected, actual)
+    ) throw new Error('Invalid token');
+
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
+
+    if (!data.id || !data.role || data.exp < Date.now()) {
+      throw new Error('Expired token');
+    }
+
+    req.user = data;
+    next();
+  } catch {
+    res.status(401).json({ message: 'Please log in to continue' });
+  }
+}
+
+const allow = (...roles) => (req, res, next) =>
+  roles.includes(req.user.role)
+    ? next()
+    : res.status(403).json({ message: 'You do not have permission for this action' });
+
+async function getPharmacyForOwner(ownerId) {
+  const { data, error } = await supabase
+    .from('pharmacies')
+    .select('*')
+    .eq('owner_id', ownerId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+}
+
+async function getInventoryForPharmacy(pharmacyId) {
+  const { data, error } = await supabase
+    .from('inventory')
+    .select('*')
+    .eq('pharmacy_id', pharmacyId);
+
+  if (error) throw error;
+  return (data || []).map(toInventory);
+}
+
+async function getOrdersForPharmacy(pharmacyId) {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('pharmacy_id', pharmacyId)
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return (data || []).map(toOrder);
+}
+
+// Health check
+app.get('/api/health', asyncRoute(async (req, res) => {
+  const { error } = await supabase
+    .from('app_users')
+    .select('id')
+    .limit(1);
+
+  if (error) {
+    return res.status(503).json({
+      status: 'error',
+      service: 'PharmaFind API',
+      database: 'unavailable'
+    });
+  }
+
+  res.json({
+    status: 'ok',
+    service: 'PharmaFind API',
+    database: 'supabase',
+    timestamp: new Date().toISOString()
+  });
+}));
+
+// Register
+app.post('/api/auth/register', asyncRoute(async (req, res) => {
+  const {
+    name, email, password, role = 'customer',
+    pharmacyName, address, phone
+  } = req.body || {};
+
+  if (!name || !email || !password) {
+    return res.status(400).json({
+      message: 'Name, email and password are required'
+    });
+  }
+
+  if (typeof password !== 'string' || password.length < 8) {
+    return res.status(400).json({
+      message: 'Password must be at least 8 characters'
+    });
+  }
+
+  if (!['customer', 'owner'].includes(role)) {
+    return res.status(400).json({ message: 'Invalid account role' });
+  }
+
+  if (role === 'owner' && (!pharmacyName || !address)) {
+    return res.status(400).json({
+      message: 'Pharmacy name and address are required for owner accounts'
+    });
+  }
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+
+  const { data: existing, error: findError } = await supabase
+    .from('app_users')
+    .select('id')
+    .eq('email', normalizedEmail)
+    .maybeSingle();
+
+  if (findError) throw findError;
+
+  if (existing) {
+    return res.status(409).json({
+      message: 'An account with this email already exists'
+    });
+  }
+
+  const user = {
+    id: crypto.randomUUID(),
+    name: String(name).trim(),
+    email: normalizedEmail,
+    role,
+    password_hash: hashPassword(password),
+    created_at: new Date().toISOString()
+  };
+
+  const { error: userError } = await supabase
+    .from('app_users')
+    .insert(user);
+
+  if (userError) {
+    if (userError.code === '23505') {
+      return res.status(409).json({
+        message: 'An account with this email already exists'
+      });
+    }
+    throw userError;
+  }
+
+  if (role === 'owner') {
+    const { error: pharmacyError } = await supabase
+      .from('pharmacies')
+      .insert({
+        id: crypto.randomUUID(),
+        name: String(pharmacyName).trim(),
+        owner_id: user.id,
+        address: String(address).trim(),
+        city: '',
+        phone: phone || '',
+        description: 'New pharmacy',
+        verified: false
+      });
+
+    if (pharmacyError) {
+      await supabase.from('app_users').delete().eq('id', user.id);
+      throw pharmacyError;
+    }
+  }
+
+  res.status(201).json({
+    token: tokenFor(user),
+    user: safeUser(user)
+  });
+}));
+
+// Login
+app.post('/api/auth/login', asyncRoute(async (req, res) => {
+  const { email, password } = req.body || {};
+
+  const { data: row, error } = await supabase
+    .from('app_users')
+    .select('*')
+    .eq('email', String(email || '').trim().toLowerCase())
+    .maybeSingle();
+
+  if (error) throw error;
+
+  if (!row || !verifyPassword(password || '', row.password_hash)) {
+    return res.status(401).json({
+      message: 'Invalid email or password'
+    });
+  }
+
+  const user = toUser(row);
+
+  res.json({
+    token: tokenFor(user),
+    user: safeUser(user)
+  });
+}));
+
+// Current user
+app.get('/api/auth/me', auth, asyncRoute(async (req, res) => {
+  const { data, error } = await supabase
+    .from('app_users')
+    .select('*')
+    .eq('id', req.user.id)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return res.status(404).json({ message: 'Account not found' });
+
+  res.json({ user: safeUser(toUser(data)) });
+}));
+
+// Search medicines
+app.get('/api/medicines', asyncRoute(async (req, res) => {
+  const { data, error } = await supabase
+    .from('inventory')
+    .select('*, pharmacies(*)');
+
+  if (error) throw error;
+
+  let items = (data || []).map(row => ({
+    ...toInventory(row),
+    pharmacy: row.pharmacies ? toPharmacy(row.pharmacies) : null
+  })).filter(item => item.pharmacy);
+
+  const q = String(req.query.q || '').toLowerCase();
+  const category = String(req.query.category || '');
+  const city = String(req.query.city || '').toLowerCase();
+
+  if (q) {
+    items = items.filter(item =>
+      [
+        item.name, item.genericName, item.brand,
+        item.category, item.pharmacy.name,
+        item.pharmacy.address
+      ].join(' ').toLowerCase().includes(q)
+    );
+  }
+
+  if (category) {
+    items = items.filter(item => item.category === category);
+  }
+
+  if (city) {
+    items = items.filter(item =>
+      `${item.pharmacy.city} ${item.pharmacy.address}`
+        .toLowerCase().includes(city)
+    );
+  }
+
+  if (req.query.inStock === 'true') {
+    items = items.filter(item => item.stock > 0);
+  }
+
+  const categories = [...new Set(
+    (data || []).map(row => row.category).filter(Boolean)
+  )].sort();
+
+  res.json({ items, categories, count: items.length });
+}));
+
+// List pharmacies
+app.get('/api/pharmacies', asyncRoute(async (req, res) => {
+  const { data, error } = await supabase
+    .from('pharmacies')
+    .select('*, inventory(id)');
+
+  if (error) throw error;
+
+  let items = (data || []).map(row => ({
+    ...toPharmacy(row),
+    medicineCount: row.inventory?.length || 0
+  }));
+
+  const q = String(req.query.q || '').toLowerCase();
+
+  if (q) {
+    items = items.filter(p =>
+      `${p.name} ${p.address} ${p.city}`.toLowerCase().includes(q)
+    );
+  }
+
+  res.json({ items });
+}));
+
+// Pharmacy details
+app.get('/api/pharmacies/:id', asyncRoute(async (req, res) => {
+  const { data: pharmacy, error } = await supabase
+    .from('pharmacies')
+    .select('*')
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!pharmacy) {
+    return res.status(404).json({ message: 'Pharmacy not found' });
+  }
+
+  res.json({
+    ...toPharmacy(pharmacy),
+    inventory: await getInventoryForPharmacy(pharmacy.id)
+  });
+}));
+
+// Owner dashboard
+app.get('/api/owner/overview', auth, allow('owner'), asyncRoute(async (req, res) => {
+  const pharmacy = await getPharmacyForOwner(req.user.id);
+
+  if (!pharmacy) {
+    return res.status(404).json({ message: 'Pharmacy profile not found' });
+  }
+
+  const inventory = await getInventoryForPharmacy(pharmacy.id);
+  const orders = await getOrdersForPharmacy(pharmacy.id);
+
+  res.json({
+    pharmacy: toPharmacy(pharmacy),
+    inventory,
+    orders,
+    stats: {
+      products: inventory.length,
+      lowStock: inventory.filter(item => item.stock < 10).length,
+      pendingOrders: orders.filter(order => order.status === 'Pending').length,
+      totalOrders: orders.length
+    }
+  });
+}));
+
+// Add inventory item
+app.post('/api/owner/inventory', auth, allow('owner'), asyncRoute(async (req, res) => {
+  const pharmacy = await getPharmacyForOwner(req.user.id);
+
+  if (!pharmacy) {
+    return res.status(404).json({ message: 'Pharmacy not found' });
+  }
+
+  const {
+    name, genericName, category, form, price, stock,
+    brand, prescription, description
+  } = req.body || {};
+
+  if (
+    !name || !category ||
+    !Number.isFinite(Number(price)) || Number(price) < 0 ||
+    !Number.isInteger(Number(stock)) || Number(stock) < 0
+  ) {
+    return res.status(400).json({
+      message: 'Enter medicine name, category, valid price and stock'
+    });
+  }
+
+  const record = {
+    id: crypto.randomUUID(),
+    pharmacy_id: pharmacy.id,
+    name,
+    generic_name: genericName || name,
+    category,
+    form: form || 'Tablet',
+    price: Number(price),
+    stock: Number(stock),
+    brand: brand || 'Generic',
+    prescription: Boolean(prescription),
+    description: description || ''
+  };
+
+  const { data, error } = await supabase
+    .from('inventory')
+    .insert(record)
+    .select()
+    .single();
+
+  if (error) throw error;
+  res.status(201).json(toInventory(data));
+}));
+
+// Update inventory item
+app.put('/api/owner/inventory/:id', auth, allow('owner'), asyncRoute(async (req, res) => {
+  const pharmacy = await getPharmacyForOwner(req.user.id);
+
+  if (!pharmacy) {
+    return res.status(404).json({ message: 'Pharmacy not found' });
+  }
+
+  const allowedFields = {
+    name: 'name',
+    genericName: 'generic_name',
+    category: 'category',
+    form: 'form',
+    brand: 'brand',
+    description: 'description',
+    price: 'price',
+    stock: 'stock',
+    prescription: 'prescription'
+  };
+
+  const updates = {};
+
+  for (const [input, column] of Object.entries(allowedFields)) {
+    if (req.body[input] !== undefined) {
+      if (['price', 'stock'].includes(input)) {
+        const value = Number(req.body[input]);
+        if (!Number.isFinite(value) || value < 0 ||
+            (input === 'stock' && !Number.isInteger(value))) {
+          return res.status(400).json({ message: `Invalid ${input}` });
+        }
+        updates[column] = value;
+      } else {
+        updates[column] = req.body[input];
+      }
+    }
+  }
+
+  const { data, error } = await supabase
+    .from('inventory')
+    .update(updates)
+    .eq('id', req.params.id)
+    .eq('pharmacy_id', pharmacy.id)
+    .select()
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) {
+    return res.status(404).json({ message: 'Inventory item not found' });
+  }
+
+  res.json(toInventory(data));
+}));
+
+// Delete inventory item
+app.delete('/api/owner/inventory/:id', auth, allow('owner'), asyncRoute(async (req, res) => {
+  const pharmacy = await getPharmacyForOwner(req.user.id);
+
+  if (!pharmacy) {
+    return res.status(404).json({ message: 'Pharmacy not found' });
+  }
+
+  const { data, error } = await supabase
+    .from('inventory')
+    .delete()
+    .eq('id', req.params.id)
+    .eq('pharmacy_id', pharmacy.id)
+    .select('id')
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) {
+    return res.status(404).json({ message: 'Inventory item not found' });
+  }
+
+  res.json({ message: 'Medicine removed from inventory' });
+}));
+
+// Place order
+app.post('/api/orders', auth, allow('customer'), asyncRoute(async (req, res) => {
+  const { items = [], customerName, address, phone } = req.body || {};
+
+  if (!Array.isArray(items) || !items.length || !address || !phone) {
+    return res.status(400).json({
+      message: 'Cart, delivery address and phone are required'
+    });
+  }
+
+  // Validate every requested item and group by pharmacy.
+  const grouped = {};
+
+  for (const line of items) {
+    const quantity = Number(line.quantity);
+
+    if (!line.inventoryId || !Number.isInteger(quantity) || quantity < 1) {
+      return res.status(400).json({ message: 'Invalid cart item or quantity' });
+    }
+
+    const { data: item, error } = await supabase
+      .from('inventory')
+      .select('*')
+      .eq('id', line.inventoryId)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (!item || item.stock < quantity) {
+      return res.status(400).json({
+        message: `Insufficient stock or invalid item: ${item?.name || 'medicine'}`
+      });
+    }
+
+    if (!grouped[item.pharmacy_id]) grouped[item.pharmacy_id] = [];
+    grouped[item.pharmacy_id].push({ item, quantity });
+  }
+
+  const createdOrders = [];
+  const stockChanges = [];
+
+  try {
+    for (const [pharmacyId, lines] of Object.entries(grouped)) {
+      let total = 0;
+      const orderItems = [];
+
+      for (const { item, quantity } of lines) {
+        const newStock = item.stock - quantity;
+
+        // Conditional update prevents ordering more than the available stock.
+        const { data: updated, error } = await supabase
+          .from('inventory')
+          .update({ stock: newStock })
+          .eq('id', item.id)
+          .eq('stock', item.stock)
+          .select('id')
+          .maybeSingle();
+
+        if (error) throw error;
+        if (!updated) throw new Error(`Stock changed for ${item.name}. Please try again.`);
+
+        stockChanges.push({ id: item.id, oldStock: item.stock });
+
+        total += Number(item.price) * quantity;
+        orderItems.push({
+          inventoryId: item.id,
+          name: item.name,
+          quantity,
+          unitPrice: Number(item.price)
+        });
+      }
+
+      const record = {
+        id: 'PF-' + Date.now().toString(36).toUpperCase() +
+          '-' + crypto.randomBytes(2).toString('hex').toUpperCase(),
+        user_id: req.user.id,
+        pharmacy_id: pharmacyId,
+        customer_name: customerName || 'Customer',
+        address,
+        phone,
+        items: orderItems,
+        total,
+        status: 'Pending',
+        created_at: new Date().toISOString()
+      };
+
+      const { data: order, error } = await supabase
+        .from('orders')
+        .insert(record)
+        .select()
+        .single();
+
+      if (error) throw error;
+      createdOrders.push(toOrder(order));
+    }
+  } catch (error) {
+    // Best-effort stock restoration if a later step fails.
+    for (const change of stockChanges.reverse()) {
+      await supabase
+        .from('inventory')
+        .update({ stock: change.oldStock })
+        .eq('id', change.id);
+    }
+    throw error;
+  }
+
+  res.status(201).json({
+    orders: createdOrders,
+    message: 'Order placed successfully'
+  });
+}));
+
+// List customer's orders or owner's pharmacy orders
+app.get('/api/orders', auth, asyncRoute(async (req, res) => {
+  let query = supabase.from('orders').select('*');
+
+  if (req.user.role === 'owner') {
+    const pharmacy = await getPharmacyForOwner(req.user.id);
+
+    if (!pharmacy) return res.json({ items: [] });
+    query = query.eq('pharmacy_id', pharmacy.id);
+  } else {
+    query = query.eq('user_id', req.user.id);
+  }
+
+  const { data, error } = await query.order('created_at', { ascending: false });
+
+  if (error) throw error;
+  res.json({ items: (data || []).map(toOrder) });
+}));
+
+// Update order status
+app.patch('/api/orders/:id/status', auth, allow('owner'), asyncRoute(async (req, res) => {
+  const pharmacy = await getPharmacyForOwner(req.user.id);
+
+  if (!pharmacy) {
+    return res.status(404).json({ message: 'Pharmacy not found' });
+  }
+
+  const allowedStatuses = [
+    'Confirmed', 'Ready for pickup', 'Completed', 'Cancelled'
+  ];
+
+  if (!allowedStatuses.includes(req.body.status)) {
+    return res.status(400).json({ message: 'Invalid order status' });
+  }
+
+  const { data, error } = await supabase
+    .from('orders')
+    .update({ status: req.body.status })
+    .eq('id', req.params.id)
+    .eq('pharmacy_id', pharmacy.id)
+    .select()
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return res.status(404).json({ message: 'Order not found' });
+
+  res.json(toOrder(data));
+}));
+
+app.use((req, res) => {
+  res.status(404).json({ message: 'API route not found' });
+});
+
+app.use((err, req, res, next) => {
+  console.error('API error:', err.message);
+  res.status(500).json({ message: 'Server error. Please try again.' });
+});
+
+app.listen(PORT, () => {
+  console.log(`PharmaFind API running on port ${PORT}`);
+});
